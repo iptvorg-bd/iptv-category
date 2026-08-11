@@ -1,17 +1,24 @@
 # -*- coding: utf-8 -*-
 """
-IPTV Category Auto-Updater Script
-Fetches specified M3U category playlists from iptv-org every 24 hours.
-Saves individual M3U files into 'playlists/' directory and creates 'all_categories.m3u'.
+IPTV Category Auto-Updater & Stream Health Verifier
+Developer: MD ANAMUL HOQUE
+Telegram: https://t.me/ireentv
+Website: https://anamul.pages.dev
+
+Fetches M3U category playlists from iptv-org every 24 hours.
+Verifies stream health (working vs dead), generates working_channels.m3u,
+dead_channels.m3u, all_categories.m3u, and category-specific files.
 """
 
 import os
 import sys
+import re
 from datetime import datetime, timezone
 import urllib.request
 import urllib.error
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# Directory where M3U files will be stored
+# Output folder where M3U files will be stored
 OUTPUT_DIR = "playlists"
 
 # Target IPTV Categories and URLs
@@ -41,6 +48,23 @@ CATEGORIES = {
         "url": "https://iptv-org.github.io/iptv/categories/music.m3u"
     }
 }
+
+DEVELOPER_NAME = "MD ANAMUL HOQUE"
+TELEGRAM_LINK = "https://t.me/ireentv"
+WEBSITE_LINK = "https://anamul.pages.dev"
+VERSION = "1.0"
+
+def get_m3u_header(playlist_name, channels_amount, last_update):
+    return (
+        f"#EXTM3U\n"
+        f"# Playlist Name: {playlist_name}\n"
+        f"# Developer: {DEVELOPER_NAME}\n"
+        f"# Telegram: {TELEGRAM_LINK}\n"
+        f"# Website: {WEBSITE_LINK}\n"
+        f"# Version: {VERSION}\n"
+        f"# Channels Amount: {channels_amount}\n"
+        f"# Last Update: {last_update}\n\n"
+    )
 
 def ensure_directory_exists(directory):
     if not os.path.exists(directory):
@@ -80,16 +104,50 @@ def extract_channels_from_m3u(m3u_text, category_name):
             current_extinf = line_str
         elif not line_str.startswith('#') and (line_str.startswith('http://') or line_str.startswith('https://')):
             if current_extinf:
-                channels.append((current_extinf, line_str))
+                channels.append((current_extinf, line_str, category_name))
                 current_extinf = None
     return channels
 
+def test_single_stream(channel_tuple):
+    extinf, url, cat = channel_tuple
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) IPTV-HealthChecker/1.0',
+        'Range': 'bytes=0-1024'
+    }
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=5) as response:
+            if response.status in [200, 206, 301, 302, 307, 308]:
+                return channel_tuple, True
+            return channel_tuple, False
+    except Exception:
+        return channel_tuple, False
+
+def verify_all_streams(channels_list, max_workers=20):
+    print(f"🔍 Testing stream health for {len(channels_list)} channels (Timeout: 5s)...")
+    working = []
+    dead = []
+    
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_channel = {executor.submit(test_single_stream, ch): ch for ch in channels_list}
+        for future in as_completed(future_to_channel):
+            ch_data, is_working = future.result()
+            if is_working:
+                working.append(ch_data)
+            else:
+                dead.append(ch_data)
+                
+    print(f"📊 Stream Check Results: {len(working)} Working, {len(dead)} Dead/Offline")
+    return working, dead
+
 def main():
-    print("=" * 60)
-    print("🚀 IPTV Category Sync Worker Started")
+    print("=" * 65)
+    print("🚀 IPTV Auto-Sync & Stream Health Checker Started")
+    print(f"👤 Developer: {DEVELOPER_NAME}")
+    print(f"🔗 Telegram: {TELEGRAM_LINK}")
     now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     print(f"⏰ Execution Time: {now_utc}")
-    print("=" * 60)
+    print("=" * 65)
 
     ensure_directory_exists(OUTPUT_DIR)
 
@@ -104,48 +162,62 @@ def main():
         
         if content:
             file_path = os.path.join(OUTPUT_DIR, f"{cat_id}.m3u")
-            header = f"#EXTM3U x-tvg-url=\"\"\n# IPTV Category: {name}\n# Last Updated: {now_utc}\n\n"
-            
             channels = extract_channels_from_m3u(content, name)
             all_channels.extend(channels)
             
-            lines = content.splitlines()
-            body_lines = [l for l in lines if not l.startswith('#EXTM3U')]
+            # Form header for category playlist
+            header = get_m3u_header(f"{name} Playlist", len(channels), now_utc)
             
             with open(file_path, 'w', encoding='utf-8') as f:
                 f.write(header)
-                f.write("\n".join(body_lines))
-                f.write("\n")
+                for extinf, stream_url, _ in channels:
+                    f.write(f"{extinf}\n{stream_url}\n")
                 
-            ch_count = len(channels)
-            summary_report.append(f"  • {name} ({cat_id}.m3u): {ch_count} channels")
-            print(f"💾 Saved {file_path} ({ch_count} channels)")
+            summary_report.append(f"  • {name} ({cat_id}.m3u): {len(channels)} channels")
+            print(f"💾 Saved {file_path} ({len(channels)} channels)")
         else:
             summary_report.append(f"  • {name} ({cat_id}.m3u): ⚠️ FAILED TO DOWNLOAD")
 
-    # Combined master playlist
-    combined_file = os.path.join(OUTPUT_DIR, "all_categories.m3u")
-    print(f"\n📦 Creating combined playlist: {combined_file}...")
-    
-    with open(combined_file, 'w', encoding='utf-8') as f:
-        f.write("#EXTM3U\n")
-        f.write(f"# IPTV Combined Categories Master Playlist\n")
-        f.write(f"# Total Channels: {len(all_channels)}\n")
-        f.write(f"# Last Updated: {now_utc}\n\n")
-        
-        for extinf, stream_url in all_channels:
+    # 1. Save all_categories.m3u
+    all_cat_file = os.path.join(OUTPUT_DIR, "all_categories.m3u")
+    header_all = get_m3u_header("All Categories Combined Playlist", len(all_channels), now_utc)
+    with open(all_cat_file, 'w', encoding='utf-8') as f:
+        f.write(header_all)
+        for extinf, stream_url, _ in all_channels:
             f.write(f"{extinf}\n{stream_url}\n")
+    print(f"✅ Created Master Playlist: {all_cat_file} ({len(all_channels)} channels)")
 
-    print(f"✅ Master playlist saved with {len(all_channels)} total channels!")
+    # 2. Verify streams to produce working_channels.m3u and dead_channels.m3u
+    working_channels, dead_channels = verify_all_streams(all_channels)
 
-    print("\n" + "=" * 60)
-    print("📊 SYNC SUMMARY REPORT")
+    # Save working_channels.m3u
+    working_file = os.path.join(OUTPUT_DIR, "working_channels.m3u")
+    header_working = get_m3u_header("Verified Working Channels Playlist", len(working_channels), now_utc)
+    with open(working_file, 'w', encoding='utf-8') as f:
+        f.write(header_working)
+        for extinf, stream_url, _ in working_channels:
+            f.write(f"{extinf}\n{stream_url}\n")
+    print(f"🟢 Saved Verified Working Playlist: {working_file} ({len(working_channels)} active channels)")
+
+    # Save dead_channels.m3u
+    dead_file = os.path.join(OUTPUT_DIR, "dead_channels.m3u")
+    header_dead = get_m3u_header("Offline & Dead Channels Audit", len(dead_channels), now_utc)
+    with open(dead_file, 'w', encoding='utf-8') as f:
+        f.write(header_dead)
+        for extinf, stream_url, _ in dead_channels:
+            f.write(f"{extinf}\n{stream_url}\n")
+    print(f"🔴 Saved Offline/Dead Channels Report: {dead_file} ({len(dead_channels)} offline channels)")
+
+    print("\n" + "=" * 65)
+    print("📊 SYNC & STREAM HEALTH SUMMARY")
     print(f"Timestamp: {now_utc}")
-    print(f"Total Combined Channels: {len(all_channels)}")
+    print(f"Total Scraped Channels: {len(all_channels)}")
+    print(f"🟢 Working Online Channels: {len(working_channels)}")
+    print(f"🔴 Dead/Offline Channels: {len(dead_channels)}")
     for line in summary_report:
         print(line)
-    print("=" * 60)
-    print("🎉 All category playlists updated successfully!")
+    print("=" * 65)
+    print("🎉 All M3U files generated with developer credentials successfully!")
 
 if __name__ == "__main__":
     main()
