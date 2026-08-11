@@ -37,10 +37,6 @@ CATEGORIES = {
         "name": "Movies",
         "url": "https://iptv-org.github.io/iptv/categories/movies.m3u"
     },
-    "news": {
-        "name": "News",
-        "url": "https://iptv-org.github.io/iptv/categories/news.m3u"
-    },
     "entertainment": {
         "name": "Entertainment",
         "url": "https://iptv-org.github.io/iptv/categories/entertainment.m3u"
