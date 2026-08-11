@@ -66,10 +66,16 @@ dead_channels.m3u, all_categories.m3u, and category-specific files.
 import os
 import sys
 import re
+import ssl
 from datetime import datetime, timezone
 import urllib.request
 import urllib.error
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# Disable SSL certificate verification globally for urllib to handle IPTV stream servers with self-signed certs
+SSL_CONTEXT = ssl.create_default_context()
+SSL_CONTEXT.check_hostname = False
+SSL_CONTEXT.verify_mode = ssl.CERT_NONE
 
 # Output folder where M3U files will be stored
 OUTPUT_DIR = "${outputDir}"
@@ -109,7 +115,7 @@ def download_m3u(category_id, name, url):
     req = urllib.request.Request(url, headers=headers)
     
     try:
-        with urllib.request.urlopen(req, timeout=30) as response:
+        with urllib.request.urlopen(req, timeout=30, context=SSL_CONTEXT) as response:
             if response.status == 200:
                 content = response.read().decode('utf-8', errors='ignore')
                 print(f"✅ Successfully downloaded [{name}]. Size: {len(content)} bytes.")
@@ -147,13 +153,19 @@ def test_single_stream(channel_tuple):
     }
     req = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=6) as response:
+        with urllib.request.urlopen(req, timeout=6, context=SSL_CONTEXT) as response:
             status = response.status
+            final_url = response.geturl().lower()
             content_type = response.headers.get('Content-Type', '').lower()
             
             if status not in [200, 206]:
                 return channel_tuple, False
                 
+            # Check shorteners & bad domains in initial or final URL
+            shortener_domains = ['jmp2.uk', 'short.gy', 'dyndns.org', 'hostlagarto.com', 'bit.ly', 'tinyurl.com', 'goo.gl', 't.co']
+            if any(dom in url.lower() or dom in final_url for dom in shortener_domains):
+                return channel_tuple, False
+
             # Read first chunk
             chunk = response.read(2048)
             try:
@@ -161,21 +173,27 @@ def test_single_stream(channel_tuple):
             except Exception:
                 chunk_str = ""
 
-            # 1. HTML / shortener / web page detection
-            if ('text/html' in content_type or 'xhtml' in content_type or
+            # 1. HTML / shortener / web page / JSON detection
+            if ('text/html' in content_type or 'xhtml' in content_type or 'json' in content_type or
                 '<!doctype html' in chunk_str or '<html' in chunk_str or
-                '<head' in chunk_str or '404 not found' in chunk_str or
-                'access denied' in chunk_str or 'short.gy' in chunk_str or
+                '<head' in chunk_str or '<script' in chunk_str or '404 not found' in chunk_str or
+                'access denied' in chunk_str or 'cloudflare' in chunk_str or 'short.gy' in chunk_str or
                 'jmp2.uk' in chunk_str):
                 return channel_tuple, False
 
-            # 2. HLS Playlist validation
-            is_hls = '.m3u8' in url.lower() or 'mpegurl' in content_type
+            # 2. Strict HLS Playlist validation
+            is_hls = '.m3u8' in url.lower() or '.m3u8' in final_url or 'mpegurl' in content_type
             if is_hls:
                 has_hls_header = ('#extm3u' in chunk_str or '#ext-x-' in chunk_str or
-                                  '.ts' in chunk_str or '.m3u8' in chunk_str)
+                                  '#extinf' in chunk_str or '.ts' in chunk_str or '.m3u8' in chunk_str)
                 if not has_hls_header:
                     return channel_tuple, False
+            else:
+                # Non-m3u8 stream validation
+                is_media = any(m in content_type for m in ['video', 'audio', 'octet-stream', 'mpeg', 'stream'])
+                if not is_media and ('text/plain' in content_type or content_type == ''):
+                    if '<' in chunk_str or 'error' in chunk_str or len(chunk_str) < 10:
+                        return channel_tuple, False
 
             return channel_tuple, True
     except Exception:
@@ -248,23 +266,25 @@ def main():
     # 2. Verify streams to produce working_channels.m3u and dead_channels.m3u
     working_channels, dead_channels = verify_all_streams(all_channels)
 
-    # Save working_channels.m3u
-    working_file = os.path.join(OUTPUT_DIR, "working_channels.m3u")
+    # Save working_channels.m3u in both playlists/ and root folder
+    working_targets = [os.path.join(OUTPUT_DIR, "working_channels.m3u"), "working_channels.m3u"]
     header_working = get_m3u_header("Verified Working Channels Playlist", len(working_channels), now_utc)
-    with open(working_file, 'w', encoding='utf-8') as f:
-        f.write(header_working)
-        for extinf, stream_url, _ in working_channels:
-            f.write(f"{extinf}\\n{stream_url}\\n")
-    print(f"🟢 Saved Verified Working Playlist: {working_file} ({len(working_channels)} active channels)")
+    for w_target in working_targets:
+        with open(w_target, 'w', encoding='utf-8') as f:
+            f.write(header_working)
+            for extinf, stream_url, _ in working_channels:
+                f.write(f"{extinf}\\n{stream_url}\\n")
+    print(f"🟢 Saved Verified Working Playlist: playlists/working_channels.m3u & working_channels.m3u ({len(working_channels)} active channels)")
 
-    # Save dead_channels.m3u
-    dead_file = os.path.join(OUTPUT_DIR, "dead_channels.m3u")
+    # Save dead_channels.m3u in both playlists/ and root folder
+    dead_targets = [os.path.join(OUTPUT_DIR, "dead_channels.m3u"), "dead_channels.m3u"]
     header_dead = get_m3u_header("Offline & Dead Channels Audit", len(dead_channels), now_utc)
-    with open(dead_file, 'w', encoding='utf-8') as f:
-        f.write(header_dead)
-        for extinf, stream_url, _ in dead_channels:
-            f.write(f"{extinf}\\n{stream_url}\\n")
-    print(f"🔴 Saved Offline/Dead Channels Report: {dead_file} ({len(dead_channels)} offline channels)")
+    for d_target in dead_targets:
+        with open(d_target, 'w', encoding='utf-8') as f:
+            f.write(header_dead)
+            for extinf, stream_url, _ in dead_channels:
+                f.write(f"{extinf}\\n{stream_url}\\n")
+    print(f"🔴 Saved Offline/Dead Channels Report: playlists/dead_channels.m3u & dead_channels.m3u ({len(dead_channels)} offline channels)")
 
     print("\\n" + "=" * 65)
     print("📊 SYNC & STREAM HEALTH SUMMARY")
@@ -316,7 +336,7 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "🤖 Auto-update IPTV playlists [${ cronSchedule }] [skip ci]"
-          file_pattern: 'playlists/*.m3u'
+          file_pattern: 'playlists/*.m3u *.m3u'
           commit_user_name: 'github-actions[bot]'
           commit_user_email: 'github-actions[bot]@users.noreply.github.com'
           commit_author: 'github-actions[bot] <github-actions[bot]@users.noreply.github.com>'

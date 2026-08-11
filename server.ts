@@ -2,6 +2,9 @@ import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 
+// Allow HTTP/HTTPS streams with self-signed SSL certificates or custom domains
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+
 const DEFAULT_CATEGORIES = [
   { id: "sports", name: "Sports", url: "https://iptv-org.github.io/iptv/categories/sports.m3u" },
   { id: "movies", name: "Movies", url: "https://iptv-org.github.io/iptv/categories/movies.m3u" },
@@ -108,10 +111,24 @@ async function startServer() {
 
         const latency = Date.now() - startTime;
         const statusCode = response.status;
+        const finalUrl = response.url.toLowerCase();
         const contentType = (response.headers.get("content-type") || "").toLowerCase();
 
-        // Must be successful HTTP status
+        // Must be successful HTTP status (200 OK or 206 Partial Content)
         if (!response.ok && statusCode !== 206) {
+          return {
+            ...channel,
+            status: "dead" as const,
+            checkLatencyMs: latency,
+            httpCode: statusCode
+          };
+        }
+
+        // Check if redirected to a shortener, ad page or landing page
+        const isShortener = ['jmp2.uk', 'short.gy', 'dyndns.org', 'hostlagarto.com', 'bit.ly', 'tinyurl.com', 'goo.gl', 't.co'].some(domain => 
+          channel.url.toLowerCase().includes(domain) || finalUrl.includes(domain)
+        );
+        if (isShortener) {
           return {
             ...channel,
             status: "dead" as const,
@@ -124,15 +141,18 @@ async function startServer() {
         const chunkText = await response.text().catch(() => "");
         const lowerChunk = chunkText.toLowerCase();
 
-        // 1. If content is HTML / shortener / error web page -> DEAD
+        // 1. If content is HTML / shortener / error web page / JSON -> DEAD
         if (
           contentType.includes("text/html") ||
           contentType.includes("application/xhtml") ||
+          contentType.includes("application/json") ||
           lowerChunk.includes("<!doctype html") ||
           lowerChunk.includes("<html") ||
           lowerChunk.includes("<head") ||
+          lowerChunk.includes("<script") ||
           lowerChunk.includes("404 not found") ||
           lowerChunk.includes("access denied") ||
+          lowerChunk.includes("cloudflare") ||
           lowerChunk.includes("short.gy") ||
           lowerChunk.includes("jmp2.uk")
         ) {
@@ -144,10 +164,14 @@ async function startServer() {
           };
         }
 
-        // 2. If URL is .m3u8, verify it contains valid HLS tags
-        const isHlsUrl = channel.url.toLowerCase().includes(".m3u8") || contentType.includes("mpegurl");
+        // 2. If URL is .m3u8 or HLS stream, verify HLS playlist format strictly
+        const isHlsUrl = channel.url.toLowerCase().includes(".m3u8") || finalUrl.includes(".m3u8") || contentType.includes("mpegurl");
         if (isHlsUrl) {
-          const isValidHls = lowerChunk.includes("#extm3u") || lowerChunk.includes("#ext-x-") || lowerChunk.includes(".ts") || lowerChunk.includes(".m3u8");
+          const isValidHls = lowerChunk.includes("#extm3u") || 
+                             lowerChunk.includes("#ext-x-") || 
+                             lowerChunk.includes("#extinf") || 
+                             lowerChunk.includes(".ts") || 
+                             lowerChunk.includes(".m3u8");
           if (!isValidHls) {
             return {
               ...channel,
@@ -155,6 +179,23 @@ async function startServer() {
               checkLatencyMs: latency,
               httpCode: statusCode
             };
+          }
+        } else {
+          // 3. For non-m3u8 streams (e.g. .ts, direct stream URLs), verify media content-type or binary chunk
+          const isMediaContentType = contentType.includes("video") || 
+                                     contentType.includes("audio") || 
+                                     contentType.includes("octet-stream") || 
+                                     contentType.includes("mpeg") ||
+                                     contentType.includes("stream");
+          if (!isMediaContentType && (contentType.includes("text/plain") || contentType === "")) {
+            if (lowerChunk.includes("<") || lowerChunk.includes("error") || lowerChunk.length < 10) {
+              return {
+                ...channel,
+                status: "dead" as const,
+                checkLatencyMs: latency,
+                httpCode: statusCode
+              };
+            }
           }
         }
 
