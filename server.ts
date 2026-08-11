@@ -91,26 +91,79 @@ async function startServer() {
       const startTime = Date.now();
       try {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 4000); // 4 sec timeout
+        const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 sec timeout
 
+        // IPTV streams work best with VLC or SmartTV user-agent
         const response = await fetch(channel.url, {
           method: "GET",
           headers: {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) IPTV-HealthChecker/1.0",
-            Range: "bytes=0-1024" // fetch only first chunk to conserve bandwidth
+            "User-Agent": "VLC/3.0.18 LibVLC/3.0.18",
+            "Accept": "*/*",
+            Range: "bytes=0-2048" // fetch first 2KB chunk
           },
+          redirect: "follow",
           signal: controller.signal
         });
         clearTimeout(timeoutId);
 
         const latency = Date.now() - startTime;
-        const isOk = response.ok || response.status === 206 || response.status === 302 || response.status === 301;
+        const statusCode = response.status;
+        const contentType = (response.headers.get("content-type") || "").toLowerCase();
 
+        // Must be successful HTTP status
+        if (!response.ok && statusCode !== 206) {
+          return {
+            ...channel,
+            status: "dead" as const,
+            checkLatencyMs: latency,
+            httpCode: statusCode
+          };
+        }
+
+        // Read first chunk text to detect HTML pages, shorteners, 404s, or invalid playlist
+        const chunkText = await response.text().catch(() => "");
+        const lowerChunk = chunkText.toLowerCase();
+
+        // 1. If content is HTML / shortener / error web page -> DEAD
+        if (
+          contentType.includes("text/html") ||
+          contentType.includes("application/xhtml") ||
+          lowerChunk.includes("<!doctype html") ||
+          lowerChunk.includes("<html") ||
+          lowerChunk.includes("<head") ||
+          lowerChunk.includes("404 not found") ||
+          lowerChunk.includes("access denied") ||
+          lowerChunk.includes("short.gy") ||
+          lowerChunk.includes("jmp2.uk")
+        ) {
+          return {
+            ...channel,
+            status: "dead" as const,
+            checkLatencyMs: latency,
+            httpCode: statusCode
+          };
+        }
+
+        // 2. If URL is .m3u8, verify it contains valid HLS tags
+        const isHlsUrl = channel.url.toLowerCase().includes(".m3u8") || contentType.includes("mpegurl");
+        if (isHlsUrl) {
+          const isValidHls = lowerChunk.includes("#extm3u") || lowerChunk.includes("#ext-x-") || lowerChunk.includes(".ts") || lowerChunk.includes(".m3u8");
+          if (!isValidHls) {
+            return {
+              ...channel,
+              status: "dead" as const,
+              checkLatencyMs: latency,
+              httpCode: statusCode
+            };
+          }
+        }
+
+        // Valid working stream
         return {
           ...channel,
-          status: isOk ? ("working" as const) : ("dead" as const),
+          status: "working" as const,
           checkLatencyMs: latency,
-          httpCode: response.status
+          httpCode: statusCode
         };
       } catch (err: any) {
         return {
