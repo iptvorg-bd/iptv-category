@@ -1,10 +1,11 @@
-#EXTM3U x-tvg-url=""
-# =========================================================
-# Documentary Category Playlist
-# Total Channels: 241
-# Last Sync: 2026-08-11 08:10:52 UTC
-# Generated automatically via GitHub Actions
-# =========================================================
+#EXTM3U
+# Playlist Name: Documentary Playlist
+# Developer: MD ANAMUL HOQUE
+# Telegram: https://t.me/ireentv
+# Website: https://anamul.pages.dev
+# Version: 1.0
+# Channels Amount: 241
+# Last Update: 2026-08-11 08:30:37 UTC
 
 #EXTINF:-1 tvg-id="30ALoomeredTV.us@SD" tvg-logo="https://cbs12.com/resources/media/0c1ecad8-fb09-4bb2-beaa-fc561dfe624a-small21x9_LoomerStill.jpg?1603419052801" group-title="Documentary;News",30A Loomered TV
 https://30a-tv.com/loomer.m3u8

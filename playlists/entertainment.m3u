@@ -1,10 +1,11 @@
-#EXTM3U x-tvg-url=""
-# =========================================================
-# Entertainment Category Playlist
-# Total Channels: 911
-# Last Sync: 2026-08-11 08:10:52 UTC
-# Generated automatically via GitHub Actions
-# =========================================================
+#EXTM3U
+# Playlist Name: Entertainment Playlist
+# Developer: MD ANAMUL HOQUE
+# Telegram: https://t.me/ireentv
+# Website: https://anamul.pages.dev
+# Version: 1.0
+# Channels Amount: 911
+# Last Update: 2026-08-11 08:30:37 UTC
 
 #EXTINF:-1 tvg-id="1KZNTV.za@SD" tvg-logo="https://admango.cdn.mangomolo.com/analytics/uploads/188/6544bebaae.jpg" group-title="Entertainment;Family;General",1KZN TV (576p)
 https://cdn.freevisiontv.co.za/sttv/smil:1kzn.stream.smil/playlist.m3u8
