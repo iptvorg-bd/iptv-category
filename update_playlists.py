@@ -37,21 +37,21 @@ CATEGORIES = {
         "name": "Movies",
         "url": "https://iptv-org.github.io/iptv/categories/movies.m3u"
     },
-    "entertainment": {
-        "name": "Entertainment",
-        "url": "https://iptv-org.github.io/iptv/categories/entertainment.m3u"
-    },
     "music": {
         "name": "Music",
         "url": "https://iptv-org.github.io/iptv/categories/music.m3u"
     },
-    "kids": {
-        "name": "Kids",
-        "url": "https://iptv-org.github.io/iptv/categories/kids.m3u"
+    "entertainment": {
+        "name": "Entertainment",
+        "url": "https://iptv-org.github.io/iptv/categories/entertainment.m3u"
     },
     "documentary": {
         "name": "Documentary",
         "url": "https://iptv-org.github.io/iptv/categories/documentary.m3u"
+    },
+    "kids": {
+        "name": "Kids",
+        "url": "https://iptv-org.github.io/iptv/categories/kids.m3u"
     }
 }
 
@@ -117,64 +117,107 @@ def extract_channels_from_m3u(m3u_text, category_name):
 def test_single_stream(channel_tuple):
     extinf, url, cat = channel_tuple
     
-    # 0. Strict .m3u8 check: Any stream URL without .m3u8 (e.g. http://213.91.179.28:8000/play/a05n)
-    # is automatically classified as DEAD and placed in dead_channels.m3u
+    # 0. Strict .m3u8 requirement: Any stream URL without .m3u8 is marked DEAD
     url_clean = url.lower().split('?')[0].split('#')[0]
-    if not url_clean.endswith('.m3u8') and '.m3u8' not in url.lower():
+    if not (url_clean.endswith('.m3u8') or '.m3u8' in url.lower()):
         return channel_tuple, False
 
-    headers = {
-        'User-Agent': 'VLC/3.0.18 LibVLC/3.0.18',
-        'Accept': '*/*',
-        'Range': 'bytes=0-2048'
-    }
-    req = urllib.request.Request(url, headers=headers)
-    try:
-        with urllib.request.urlopen(req, timeout=6, context=SSL_CONTEXT) as response:
-            status = response.status
-            final_url = response.geturl().lower()
-            content_type = response.headers.get('Content-Type', '').lower()
-            
-            if status not in [200, 206]:
-                return channel_tuple, False
-                
-            # Check shorteners & bad domains in initial or final URL
-            shortener_domains = ['jmp2.uk', 'short.gy', 'dyndns.org', 'hostlagarto.com', 'bit.ly', 'tinyurl.com', 'goo.gl', 't.co']
-            if any(dom in url.lower() or dom in final_url for dom in shortener_domains):
-                return channel_tuple, False
+    # Multi-UA fallback: Try Chrome browser first, then VLC, then TiviMate
+    headers_list = [
+        {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Connection': 'keep-alive'
+        },
+        {
+            'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20',
+            'Accept': '*/*'
+        },
+        {
+            'User-Agent': 'TiviMate/4.7.0',
+            'Accept': '*/*'
+        }
+    ]
 
-            # Read first chunk
-            chunk = response.read(2048)
-            try:
-                chunk_str = chunk.decode('utf-8', errors='ignore').lower()
-            except Exception:
-                chunk_str = ""
+    shorteners = ['jmp2.uk', 'short.gy', 'dyndns.org', 'hostlagarto.com', 'bit.ly', 'tinyurl.com', 'goo.gl', 't.co']
 
-            # 1. HTML / shortener / web page / JSON detection
-            if ('text/html' in content_type or 'xhtml' in content_type or 'json' in content_type or
-                '<!doctype html' in chunk_str or '<html' in chunk_str or
-                '<head' in chunk_str or '<script' in chunk_str or '404 not found' in chunk_str or
-                'access denied' in chunk_str or 'cloudflare' in chunk_str or 'short.gy' in chunk_str or
-                'jmp2.uk' in chunk_str):
-                return channel_tuple, False
+    for headers in headers_list:
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=6, context=SSL_CONTEXT) as response:
+                status = response.status
+                if status not in [200, 206]:
+                    continue
 
-            # 2. Strict HLS Playlist validation
-            is_hls = '.m3u8' in url.lower() or '.m3u8' in final_url or 'mpegurl' in content_type
-            if is_hls:
-                has_hls_header = ('#extm3u' in chunk_str or '#ext-x-' in chunk_str or
-                                  '#extinf' in chunk_str or '.ts' in chunk_str or '.m3u8' in chunk_str)
-                if not has_hls_header:
+                final_url = response.geturl().lower()
+                if any(dom in url.lower() or dom in final_url for dom in shorteners):
                     return channel_tuple, False
-            else:
-                # Non-m3u8 stream validation
-                is_media = any(m in content_type for m in ['video', 'audio', 'octet-stream', 'mpeg', 'stream'])
-                if not is_media and ('text/plain' in content_type or content_type == ''):
-                    if '<' in chunk_str or 'error' in chunk_str or len(chunk_str) < 10:
-                        return channel_tuple, False
 
-            return channel_tuple, True
-    except Exception:
-        return channel_tuple, False
+                content_type = response.headers.get('Content-Type', '').lower()
+                if 'text/html' in content_type or 'xhtml' in content_type or 'json' in content_type:
+                    return channel_tuple, False
+
+                chunk = response.read(10000)
+                if not chunk:
+                    continue
+
+                chunk_str = chunk.decode('utf-8', errors='ignore')
+                chunk_lower = chunk_str.lower()
+
+                if any(err in chunk_lower for err in ['<!doctype', '<html', '<head', '<script', '404 not found', 'access denied', 'cloudflare', 'short.gy', 'jmp2.uk', '<error', 'accessdenied', 'expired']):
+                    return channel_tuple, False
+
+                if '#extm3u' not in chunk_lower:
+                    return channel_tuple, False
+
+                # Extract first link in playlist (segment or sub-playlist)
+                lines = [l.strip() for l in chunk_str.splitlines() if l.strip()]
+                first_link = None
+                for line in lines:
+                    if not line.startswith('#') and len(line) > 3:
+                        first_link = line
+                        break
+
+                if not first_link:
+                    return channel_tuple, False
+
+                # Deep verify segment or sub-playlist
+                target_url = urllib.parse.urljoin(url, first_link)
+                try:
+                    target_req = urllib.request.Request(target_url, headers=headers)
+                    with urllib.request.urlopen(target_req, timeout=5, context=SSL_CONTEXT) as target_resp:
+                        if target_resp.status not in [200, 206]:
+                            return channel_tuple, False
+
+                        target_ct = target_resp.headers.get('Content-Type', '').lower()
+                        if 'text/html' in target_ct or 'json' in target_ct:
+                            return channel_tuple, False
+
+                        target_chunk = target_resp.read(2048)
+                        if not target_chunk:
+                            return channel_tuple, False
+
+                        target_str = target_chunk.decode('utf-8', errors='ignore').lower()
+                        if any(err in target_str for err in ['<!doctype', '<html', '<head', 'access denied', '<error']):
+                            return channel_tuple, False
+
+                        if target_url.lower().endswith('.m3u8') or '.m3u8?' in target_url.lower() or 'mpegurl' in target_ct:
+                            if '#extm3u' not in target_str:
+                                return channel_tuple, False
+
+                        return channel_tuple, True
+                except Exception:
+                    return channel_tuple, False
+
+        except urllib.error.HTTPError as e:
+            if e.code in [401, 403, 406]:
+                continue
+            return channel_tuple, False
+        except Exception:
+            continue
+
+    return channel_tuple, False
 
 def verify_all_streams(channels_list, max_workers=20):
     print(f"🔍 Testing stream health for {len(channels_list)} channels (Timeout: 5s)...")
@@ -265,12 +308,15 @@ def main():
 
     print("\n" + "=" * 65)
     print("📊 SYNC & STREAM HEALTH SUMMARY")
-    print(f"Timestamp: {now_utc}")
-    print(f"Total Scraped Channels: {len(all_channels)}")
-    print(f"🟢 Working Online Channels: {len(working_channels)}")
-    print(f"🔴 Dead/Offline Channels: {len(dead_channels)}")
     print("=" * 65)
-    print("✨ Execution completed successfully.")
+    for report in summary_report:
+        print(report)
+    print(f"  • Total Downloaded Channels : {len(all_channels)}")
+    print(f"  • Verified Working Channels : {len(working_channels)}")
+    print(f"  • Offline / Dead Channels  : {len(dead_channels)}")
+    print(f"  • Saved File Location      : ./{OUTPUT_DIR}/")
+    print("=" * 65)
+    print("🎉 All tasks completed successfully!")
 
 if __name__ == "__main__":
     main()
