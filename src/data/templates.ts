@@ -141,15 +141,43 @@ def extract_channels_from_m3u(m3u_text, category_name):
 def test_single_stream(channel_tuple):
     extinf, url, cat = channel_tuple
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) IPTV-HealthChecker/1.0',
-        'Range': 'bytes=0-1024'
+        'User-Agent': 'VLC/3.0.18 LibVLC/3.0.18',
+        'Accept': '*/*',
+        'Range': 'bytes=0-2048'
     }
     req = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=5) as response:
-            if response.status in [200, 206, 301, 302, 307, 308]:
-                return channel_tuple, True
-            return channel_tuple, False
+        with urllib.request.urlopen(req, timeout=6) as response:
+            status = response.status
+            content_type = response.headers.get('Content-Type', '').lower()
+            
+            if status not in [200, 206]:
+                return channel_tuple, False
+                
+            # Read first chunk
+            chunk = response.read(2048)
+            try:
+                chunk_str = chunk.decode('utf-8', errors='ignore').lower()
+            except Exception:
+                chunk_str = ""
+
+            # 1. HTML / shortener / web page detection
+            if ('text/html' in content_type or 'xhtml' in content_type or
+                '<!doctype html' in chunk_str or '<html' in chunk_str or
+                '<head' in chunk_str or '404 not found' in chunk_str or
+                'access denied' in chunk_str or 'short.gy' in chunk_str or
+                'jmp2.uk' in chunk_str):
+                return channel_tuple, False
+
+            # 2. HLS Playlist validation
+            is_hls = '.m3u8' in url.lower() or 'mpegurl' in content_type
+            if is_hls:
+                has_hls_header = ('#extm3u' in chunk_str or '#ext-x-' in chunk_str or
+                                  '.ts' in chunk_str or '.m3u8' in chunk_str)
+                if not has_hls_header:
+                    return channel_tuple, False
+
+            return channel_tuple, True
     except Exception:
         return channel_tuple, False
 
