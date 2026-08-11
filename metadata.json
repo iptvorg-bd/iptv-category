@@ -1,0 +1,6 @@
+{
+  "name": "IPTV Auto Sync & GitHub Action Generator",
+  "description": "Auto-sync iptv-org playlists with Python script & GitHub Actions 24-hour worker, channel parser, and repository builder.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
